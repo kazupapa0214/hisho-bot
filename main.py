@@ -61,7 +61,7 @@ def reply_to_line(reply_token: str, message: str):
 def ask_gemini(user_id: str, user_message: str) -> str:
     if user_id not in chat_sessions:
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.0-flash',
             system_instruction=SYSTEM_PROMPT
         )
         chat_sessions[user_id] = model.start_chat(history=[])
