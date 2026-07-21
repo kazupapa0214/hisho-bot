@@ -3,17 +3,14 @@ import hmac
 import hashlib
 import base64
 import json
-from flask import Flask, request, abort
-import google.generativeai as genai
 import requests
+from flask import Flask, request, abort
 
 app = Flask(__name__)
 
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET', '')
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-
-genai.configure(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """あなたは長山修一さんの個人秘書「クロコ」です。
 長山修一さんのプロフィール：
@@ -28,19 +25,13 @@ SYSTEM_PROMPT = """あなたは長山修一さんの個人秘書「クロコ」�
 3. 木賀1600坪PJ：本丸10億円・高級ホテル誘致
 4. 宮城野MPJ：しいたけ栽培所（農福連携）
 
-経営哲学「三つの根」：
-1. 死から学んだ生の絶対性
-2. 西陽の哲学（見捨てられたものに光を当てる再生の美学）
-3. 命のバトン（息子・和樹へ繋ぐ）
-
 応答スタイル：
 - 丁寧語不要。端的に、正確に。
 - LINEのメッセージなので短く簡潔に。
 - 数字は必ず正確に扱う。
-- 「息子・和樹に説明できるか」を判断基準に使う。
 """
 
-chat_sessions = {}
+chat_histories = {}
 
 def verify_signature(body: bytes, signature: str) -> bool:
     h = hmac.new(LINE_CHANNEL_SECRET.encode('utf-8'), body, hashlib.sha256).digest()
@@ -59,15 +50,28 @@ def reply_to_line(reply_token: str, message: str):
     requests.post('https://api.line.me/v2/bot/message/reply', headers=headers, json=data)
 
 def ask_gemini(user_id: str, user_message: str) -> str:
-    if user_id not in chat_sessions:
-        model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash',
-            system_instruction=SYSTEM_PROMPT
-        )
-        chat_sessions[user_id] = model.start_chat(history=[])
-    chat = chat_sessions[user_id]
-    response = chat.send_message(user_message)
-    return response.text
+    if user_id not in chat_histories:
+        chat_histories[user_id] = []
+    chat_histories[user_id].append({
+        "role": "user",
+        "parts": [{"text": user_message}]
+    })
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": chat_histories[user_id]
+    }
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    result = resp.json()
+    reply_text = result["candidates"][0]["content"]["parts"][0]["text"]
+    chat_histories[user_id].append({
+        "role": "model",
+        "parts": [{"text": reply_text}]
+    })
+    if len(chat_histories[user_id]) > 20:
+        chat_histories[user_id] = chat_histories[user_id][-20:]
+    return reply_text
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -85,7 +89,7 @@ def webhook():
                 response = ask_gemini(user_id, user_message)
                 reply_to_line(reply_token, response)
             except Exception as e:
-                reply_to_line(reply_token, f'エラーが発生しました。少し待ってから再送して。({str(e)[:100]})')
+                reply_to_line(reply_token, f'エラー：{str(e)[:100]}')
     return 'OK', 200
 
 @app.route('/', methods=['GET'])
